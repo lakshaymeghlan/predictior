@@ -1,0 +1,11 @@
+pandas
+numpy
+sqlalchemy
+psycopg2-binary
+python-dotenv
+lightgbm
+scikit-learn
+joblib
+ta
+pyarrow
+tqdm

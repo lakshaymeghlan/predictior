@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+backend/python-worker/__pycache__/
+backend/node-api/node_modules/
+*.sqlite
+.DS_Store
+venv/

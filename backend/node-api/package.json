@@ -1,0 +1,15 @@
+{
+  "name": "predictor-node-api",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "lint": "eslint . || true"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.55.0"
+  }
+}
