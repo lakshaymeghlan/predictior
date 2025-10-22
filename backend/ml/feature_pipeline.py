@@ -1,128 +1,119 @@
+# predictor/backend/ml/feature_pipeline.py
+"""
+Feature pipeline: load OHLCV from DB, resample to timeframe, compute rolling indicators.
+
+Exposes:
+    prepare_feature_matrix(symbol='BTC/USDT', timeframe='1h', horizon=1)
+Returns:
+    X (DataFrame of features), y (continuous return), y_clf (binary up/down), df_full (OHLCV with returns)
+"""
 import os
-from datetime import timezone
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine, text
+import sqlalchemy as sa
 from dotenv import load_dotenv
-from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator
-from ta.volatility import AverageTrueRange
-from tqdm import tqdm
+from datetime import timedelta
 
 load_dotenv()
-
 PG_URI = os.getenv("PG_URI")
-SYMBOL = os.getenv("SYMBOL", "BTC/USDT")
-TIMEFRAME = os.getenv("TIMEFRAME", "1h")
-HOURS_LOOKBACK = int(os.getenv("HOURS_LOOKBACK", "72"))
+if PG_URI is None:
+    raise RuntimeError("PG_URI environment not set. Add PG_URI to .env")
 
-engine = create_engine(PG_URI)
+engine = sa.create_engine(PG_URI, future=True)
 
-
-def load_ohlcv_from_db(symbol: str):
-    """
-    Load OHLCV for symbol from Postgres and return a DataFrame indexed by tz-aware UTC DatetimeIndex.
-    """
-    query = text("""
-        SELECT ts AT TIME ZONE 'UTC' AS ts, open, high, low, close, volume
-        FROM ohlcv
-        WHERE symbol = :symbol
-        ORDER BY ts ASC
-    """)
-    df = pd.read_sql(query, engine, params={"symbol": symbol}, parse_dates=["ts"])
-
-    # If no rows, return empty df with expected columns
+def load_ohlcv_from_db(symbol):
+    q = sa.text("SELECT symbol, ts AT TIME ZONE 'UTC' as ts, open, high, low, close, volume FROM ohlcv WHERE symbol = :sym ORDER BY ts ASC")
+    df = pd.read_sql(q, engine, params={"sym": symbol})
     if df.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"]).astype(float)
-
-    # Ensure 'ts' column exists and is parsed as datetimetz (UTC)
-    if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"], utc=True)
-        # Set as index (DatetimeIndex)
-        df = df.set_index("ts")
-    else:
-        # If 'ts' not present, try to coerce the existing index to datetime
-        df.index = pd.to_datetime(df.index, utc=True)
-
-    # Ensure index is tz-aware UTC (defensive)
-    if getattr(df.index, "tz", None) is None:
-        df.index = df.index.tz_localize("UTC")
-
-    # Sort by index just in case
-    df = df.sort_index()
-
+        return df
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.set_index("ts").sort_index()
     return df
 
-
-
-def compute_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    # basic returns
-    df["return_1h"] = df["close"].pct_change()
-    df["return_3h"] = df["close"].pct_change(3)
-    df["return_24h"] = df["close"].pct_change(24)
-
-    # log returns
-    df["logret_1h"] = np.log(df["close"] / df["close"].shift(1))
-
-    # EMA features
-    for span in [8, 21, 50]:
-        df[f"ema_{span}"] = EMAIndicator(close=df["close"], window=span).ema_indicator()
-
-    # RSI
-    df["rsi_14"] = RSIIndicator(close=df["close"], window=14).rsi()
-
-    # ATR (volatility)
-    df["atr_14"] = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
-
-    # rolling stats
-    df["vol_24h"] = df["return_1h"].rolling(24).std()
-    df["vol_72h"] = df["return_1h"].rolling(72).std()
-
-    # volume features
-    df["vol_zscore_24"] = (df["volume"] - df["volume"].rolling(24).mean()) / (df["volume"].rolling(24).std() + 1e-9)
-
-    # time features
-    df["hour"] = df.index.hour
-    df["dow"] = df.index.dayofweek
-
-    # momentum cross features
-    df["ema8_minus_ema21"] = df["ema_8"] - df["ema_21"]
-    df["ema8_div_ema21"] = df["ema_8"] / (df["ema_21"] + 1e-9)
-
-    # Fill/clean
-    df = df.dropna().copy()
-    return df
-
-
-def build_target(df: pd.DataFrame, horizon: int = 1):
+def resample_ohlcv(df, timeframe):
     """
-    Create next-hour return target (shifted -horizon)
-    and binary label up_1h (1 if return > 0 else 0)
+    timeframe: examples '1h', '4h', '1d'
     """
-    df = df.copy()
-    df[f"next_{horizon}h_return"] = df["close"].shift(-horizon) / df["close"] - 1.0
-    df = df.dropna().copy()
-    df[f"up_{horizon}h"] = (df[f"next_{horizon}h_return"] > 0).astype(int)
+    if timeframe == "1h":
+        return df
+    if timeframe.endswith("h"):
+        hours = int(timeframe[:-1])
+        rule = f"{hours}H"
+        agg = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }
+        return df.resample(rule).agg(agg).dropna()
+    if timeframe in ("1d","daily","24h"):
+        agg = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }
+        return df.resample("1D").agg(agg).dropna()
+    # default: return original
     return df
 
+def add_technical_indicators(df):
+    # computes a set of rolling indicators
+    df = df.copy()
+    close = df["close"]
+    df["ret_1"] = close.pct_change().fillna(0)
+    df["ret_3"] = close.pct_change(3)
+    df["ret_24"] = close.pct_change(24) if len(df) > 24 else close.pct_change().fillna(0)
+    # EMAs
+    df["ema_8"] = close.ewm(span=8, adjust=False).mean()
+    df["ema_21"] = close.ewm(span=21, adjust=False).mean()
+    df["ema_50"] = close.ewm(span=50, adjust=False).mean()
+    # RSI (14)
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    roll_up = up.rolling(14).mean()
+    roll_down = down.rolling(14).mean()
+    rs = roll_up / (roll_down + 1e-9)
+    df["rsi_14"] = 100 - (100 / (1 + rs))
+    # volatility / ATR
+    df["hl_range"] = (df["high"] - df["low"]) / df["close"]
+    df["vol_21"] = df["ret_1"].rolling(21).std()
+    # momentum indicator
+    df["momentum_12"] = close.pct_change(12)
+    # moving average cross features
+    df["ema8_ema21"] = df["ema_8"] - df["ema_21"]
+    df = df.replace([np.inf, -np.inf], np.nan)
+    return df
 
-def prepare_feature_matrix(symbol: str = SYMBOL, horizon: int = 1):
+def prepare_feature_matrix(symbol="BTC/USDT", timeframe="1h", horizon=1):
+    """
+    Prepares X, y for a symbol/timeframe/horizon:
+      - X: features up to time t
+      - y: forward return over horizon (close_{t+h}/close_t - 1)
+      - y_clf: binary up/down label
+    """
     df = load_ohlcv_from_db(symbol)
     if df.empty:
-        raise RuntimeError("No OHLCV data found for symbol: " + symbol)
-    df_feat = compute_features(df)
-    df_target = build_target(df_feat, horizon=horizon)
-    # choose feature columns (exclude raw price & next return)
-    exclude = ["open", "high", "low", "close", "volume", f"next_{horizon}h_return", f"up_{horizon}h"]
-    feature_cols = [c for c in df_target.columns if c not in exclude]
-    X = df_target[feature_cols].copy()
-    y = df_target[f"next_{horizon}h_return"].copy()
-    y_clf = df_target[f"up_{horizon}h"].copy()
-    return X, y, y_clf, df_target
+        return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=int), df
 
+    df = resample_ohlcv(df, timeframe)
+    if df.empty or len(df) < 200:
+        return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=int), df
 
-if __name__ == "__main__":
-    X, y, y_clf, df_full = prepare_feature_matrix()
-    print("Prepared features:", X.shape)
-    print("Example columns:", X.columns.tolist()[:20])
+    df = add_technical_indicators(df)
+    # forward return
+    df["future_close"] = df["close"].shift(-horizon)
+    df["target_ret"] = df["future_close"] / df["close"] - 1
+    df["target_up"] = (df["target_ret"] > 0).astype(int)
+
+    # features list (drop columns we don't want)
+    drop_cols = ["future_close","target_ret","target_up"]
+    features = [c for c in df.columns if c not in drop_cols and c not in ["symbol"]]
+    X = df[features].copy().dropna()
+    y = df.loc[X.index, "target_ret"].copy()
+    y_clf = df.loc[X.index, "target_up"].copy()
+
+    return X, y, y_clf, df

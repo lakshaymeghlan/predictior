@@ -1,0 +1,31 @@
+{
+  "symbol": "GLD",
+  "timeframe": "1d",
+  "horizon": 1,
+  "meta_file": "meta_stack_GLD_1d_20251022_152848.joblib",
+  "base_files": {
+    "lgbm": "base_GLD_1d_20251022_152848_lgbm.joblib",
+    "xgb": "base_GLD_1d_20251022_152848_xgb.joblib",
+    "rf": "base_GLD_1d_20251022_152848_rf.joblib"
+  },
+  "meta_rmse_oof": 0.00995286064246403,
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ret_1",
+    "ret_3",
+    "ret_24",
+    "ema_8",
+    "ema_21",
+    "ema_50",
+    "rsi_14",
+    "hl_range",
+    "vol_21",
+    "momentum_12",
+    "ema8_ema21"
+  ],
+  "trained_at": "20251022_152848"
+}

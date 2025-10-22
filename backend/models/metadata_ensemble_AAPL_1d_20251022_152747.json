@@ -1,0 +1,31 @@
+{
+  "symbol": "AAPL",
+  "timeframe": "1d",
+  "horizon": 1,
+  "meta_file": "meta_stack_AAPL_1d_20251022_152747.joblib",
+  "base_files": {
+    "lgbm": "base_AAPL_1d_20251022_152747_lgbm.joblib",
+    "xgb": "base_AAPL_1d_20251022_152747_xgb.joblib",
+    "rf": "base_AAPL_1d_20251022_152747_rf.joblib"
+  },
+  "meta_rmse_oof": 0.018316172793700587,
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ret_1",
+    "ret_3",
+    "ret_24",
+    "ema_8",
+    "ema_21",
+    "ema_50",
+    "rsi_14",
+    "hl_range",
+    "vol_21",
+    "momentum_12",
+    "ema8_ema21"
+  ],
+  "trained_at": "20251022_152747"
+}
