@@ -1,9 +1,8 @@
 "use client";
 
-// pages/predictor.jsx (or app/predictor/page.jsx)
 import { useEffect, useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { predict, fetchBacktestLatest } from "../../lib/api";
+import Loader from "../components/Loader";
 
 export default function PredictorPage() {
   const [loading, setLoading] = useState(false);
@@ -14,8 +13,7 @@ export default function PredictorPage() {
   async function fetchPrediction() {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/predict?symbol=BTC/USDT&period=1h`);
-      const json = await res.json();
+      const json = await predict("BTC/USDT", "1h", false);
       setPrediction(json);
     } catch (e) {
       setPrediction({ error: String(e) });
@@ -26,15 +24,8 @@ export default function PredictorPage() {
 
   async function fetchBacktest() {
     try {
-      const res = await fetch(`${API_BASE}/backtest/latest`);
-      if (!res.ok) {
-        setEquityImageUrl(null);
-        return;
-      }
-      const contentType = res.headers.get("content-type");
-      const blob = await res.blob();
+      const { blob, contentType } = await fetchBacktestLatest();
       const url = URL.createObjectURL(blob);
-      // if png, set image url, if csv you might show download link instead
       if (contentType && contentType.includes("image")) {
         setEquityImageUrl(url);
         setEquityCsvUrl(null);
@@ -51,7 +42,6 @@ export default function PredictorPage() {
   useEffect(() => {
     fetchPrediction();
     fetchBacktest();
-    // poll every 30s for demo
     const i = setInterval(fetchPrediction, 30000);
     return () => clearInterval(i);
   }, []);
@@ -65,7 +55,7 @@ export default function PredictorPage() {
 
         <div className="bg-gray-800 rounded-2xl p-6 shadow-xl">
           {loading ? (
-            <div className="text-gray-300">Loading prediction…</div>
+            <div className="text-gray-300"><Loader /></div>
           ) : prediction ? (
             prediction.error ? (
               <div className="text-red-400">Error: {prediction.error}</div>
