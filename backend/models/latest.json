@@ -1,1 +1,23 @@
-{"booster_file": "lgb_booster_BTC_USDT_20251022_145652.txt", "features": ["return_1h", "return_3h", "return_24h", "logret_1h", "ema_8", "ema_21", "ema_50", "rsi_14", "atr_14", "vol_24h", "vol_72h", "vol_zscore_24", "hour", "dow", "ema8_minus_ema21", "ema8_div_ema21"], "model_file": "lgb_model_BTC_USDT_20251022_145652.joblib"}
+{
+  "booster_file": "lgb_booster_BTC_USDT_20251023_194711.txt",
+  "model_file": "lgb_model_BTC_USDT_20251023_194711.joblib",
+  "metadata_file": "metadata_BTC_USDT_20251023_194711.json",
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ret_1",
+    "ret_3",
+    "ret_24",
+    "ema_8",
+    "ema_21",
+    "ema_50",
+    "rsi_14",
+    "hl_range",
+    "vol_21",
+    "momentum_12",
+    "ema8_ema21"
+  ]
+}

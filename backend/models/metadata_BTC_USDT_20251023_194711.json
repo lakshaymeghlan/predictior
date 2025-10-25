@@ -1,0 +1,38 @@
+{
+  "symbol": "BTC/USDT",
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ret_1",
+    "ret_3",
+    "ret_24",
+    "ema_8",
+    "ema_21",
+    "ema_50",
+    "rsi_14",
+    "hl_range",
+    "vol_21",
+    "momentum_12",
+    "ema8_ema21"
+  ],
+  "params": {
+    "learning_rate": 0.00013285596956088736,
+    "num_leaves": 47,
+    "min_data_in_leaf": 104,
+    "feature_fraction": 0.971126087764616,
+    "bagging_fraction": 0.6082101595138325,
+    "bagging_freq": 8,
+    "lambda_l1": 1.2820021809622557,
+    "lambda_l2": 2.1463486461370795,
+    "objective": "regression",
+    "metric": "rmse",
+    "verbose": -1
+  },
+  "ts": "20251023_194711",
+  "booster_file": "lgb_booster_BTC_USDT_20251023_194711.txt",
+  "joblib_file": "lgb_model_BTC_USDT_20251023_194711.joblib",
+  "best_cv_rmse": 0.005399674282964263
+}
