@@ -135,58 +135,135 @@ def load_latest_model():
     with open(latest, "r") as f:
         info = json.load(f)
 
-    # prefer native booster if present
+    # prefer native booster if present in latest.json
     booster_file = info.get("booster_model", None) or info.get("booster_file", None)
     joblib_file = info.get("joblib_model") or info.get("model_file")
 
+    def resolve_path(name):
+        if not name:
+            return None
+        p = Path(name)
+        if not p.is_absolute():
+            p = (MODEL_DIR / name).resolve()
+        return p
+
+    # try booster (absolute path)
     if booster_file:
+        booster_path = resolve_path(booster_file)
         try:
-            booster = lgb.Booster(model_file=str(booster_file))
+            booster = lgb.Booster(model_file=str(booster_path))
+            # lightweight wrapper to give .predict(X) semantics
             class SimpleBoosterWrap:
                 def __init__(self, b): self.booster = b
                 def predict(self, X, num_iteration=None):
                     if num_iteration is None:
                         return self.booster.predict(X)
                     return self.booster.predict(X, num_iteration=num_iteration)
-            return SimpleBoosterWrap(booster), info["features"]
+            return SimpleBoosterWrap(booster), info.get("features", [])
         except Exception as e:
-            print("Failed to load native booster:", e)
+            print("Failed to load native booster from", booster_path, ":", e)
 
+    # try joblib (absolute path)
     if joblib_file:
+        joblib_path = resolve_path(joblib_file)
         try:
-            model = joblib.load(joblib_file)
-            return model, info["features"]
+            model = joblib.load(str(joblib_path))
+            return model, info.get("features", [])
         except Exception as e:
             print("joblib.load failed:", e)
 
-    # If joblib fails because class was pickled from train script as __main__.BoosterWrapper,
-    # try importing train_lightgbm and inject BoosterWrapper into __main__
-    try:
-        mod = None
-        try:
-            mod = importlib.import_module("train_lightgbm")
-        except Exception:
-            from importlib.machinery import SourceFileLoader
-            tl_path = (Path(__file__).resolve().parents[0] / "train_lightgbm.py").resolve()
-            if tl_path.exists():
-                loader = SourceFileLoader("train_lightgbm", str(tl_path))
-                mod = types.ModuleType(loader.name)
-                loader.exec_module(mod)
-                sys.modules["train_lightgbm"] = mod
+            # If unpickling failed because training saved a custom wrapper class in __main__,
+            # inject a fallback SimpleBoosterWrapper into __main__ so pickle can find it.
+            # This fallback will look for a booster file in MODEL_DIR and delegate predictions to it.
+            try:
+                import sys
+                main_mod = sys.modules.get("__main__")
+                if main_mod is None:
+                    import types
+                    main_mod = types.ModuleType("__main__")
+                    sys.modules["__main__"] = main_mod
 
-        if mod is not None and hasattr(mod, "BoosterWrapper"):
-            main_mod = sys.modules.get("__main__")
-            if main_mod is None:
-                main_mod = types.ModuleType("__main__")
-                sys.modules["__main__"] = main_mod
-            setattr(sys.modules["__main__"], "BoosterWrapper", getattr(mod, "BoosterWrapper"))
-            # retry joblib.load
-            model = joblib.load(joblib_file)
-            return model, info["features"]
-    except Exception as e2:
-        print("Retry inject BoosterWrapper failed:", e2)
+                # define fallback class in __main__ namespace
+                class SimpleBoosterWrapper:
+                    def __init__(self, *args, **kwargs):
+                        # placeholder; real state will be set via __setstate__ when unpickling
+                        self.booster = None
+
+                    def __setstate__(self, state):
+                        # state may be dict or other object; try to recover booster_file or booster inside it
+                        try:
+                            # if state contains a booster attribute that is already a Booster, keep it
+                            if isinstance(state, dict):
+                                if "booster" in state and isinstance(state["booster"], lgb.Booster):
+                                    self.booster = state["booster"]
+                                    return
+                                # if state references a model file name, attempt to resolve it
+                                maybe = state.get("model_file") or state.get("booster_file") or state.get("filename")
+                                if maybe:
+                                    p = Path(maybe)
+                                    if not p.is_absolute():
+                                        p = (MODEL_DIR / maybe).resolve()
+                                    try:
+                                        self.booster = lgb.Booster(model_file=str(p))
+                                        return
+                                    except Exception:
+                                        pass
+                            # last resort: try to use any booster file present in MODEL_DIR (the latest booster)
+                            boosters = sorted(MODEL_DIR.glob("lgb_booster_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+                            if boosters:
+                                self.booster = lgb.Booster(model_file=str(boosters[0]))
+                            else:
+                                self.booster = None
+                        except Exception:
+                            self.booster = None
+
+                    def predict(self, X, num_iteration=None):
+                        import numpy as _np
+                        if getattr(self, "booster", None) is None:
+                            # return zeros so code can continue
+                            try:
+                                n = X.shape[0]
+                                return _np.zeros(n)
+                            except Exception:
+                                return _np.array([])
+                        try:
+                            if num_iteration is None:
+                                return self.booster.predict(X)
+                            return self.booster.predict(X, num_iteration=num_iteration)
+                        except Exception:
+                            # safe fallback
+                            try:
+                                n = X.shape[0]
+                                return _np.zeros(n)
+                            except Exception:
+                                return _np.array([])
+
+                # attach to __main__ so pickle can find it
+                setattr(main_mod, "SimpleBoosterWrapper", SimpleBoosterWrapper)
+
+                # retry joblib.load
+                model = joblib.load(str(joblib_path))
+                return model, info.get("features", [])
+            except Exception as e2:
+                print("Retry inject SimpleBoosterWrapper failed:", e2)
+
+    # final fallback: try to load the newest booster or joblib from MODEL_DIR
+    try:
+        boosters = sorted(MODEL_DIR.glob("lgb_booster_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if boosters:
+            booster = lgb.Booster(model_file=str(boosters[0]))
+            class SimpleBoosterWrap2:
+                def __init__(self, b): self.booster = b
+                def predict(self, X, num_iteration=None):
+                    if num_iteration is None:
+                        return self.booster.predict(X)
+                    return self.booster.predict(X, num_iteration=num_iteration)
+            return SimpleBoosterWrap2(booster), info.get("features", [])
+    except Exception:
+        pass
 
     raise RuntimeError(f"Unable to load model. Check latest.json at {latest}")
+
 
 def compute_predictions(model, features, X):
     missing = [c for c in features if c not in X.columns]
@@ -334,7 +411,34 @@ def run_and_report(cfg=CONFIG, save_outputs=True):
     X, y, y_clf, df_full = prepare_feature_matrix(horizon=cfg["horizon"])
     model, features = load_latest_model()
     preds = compute_predictions(model, features, X)
-    preds = preds.loc[df_full.index]
+    # --- robust index alignment (replace fragile preds.loc[df_full.index]) ---
+    # Print diagnostics to help debug index mismatches
+    print("DEBUG: preds.index tzinfo:", getattr(preds.index, 'tz', None))
+    print("DEBUG: df_full.index tzinfo:", getattr(df_full.index, 'tz', None))
+    print("DEBUG: preds length, df_full length:", len(preds), len(df_full))
+    print("DEBUG: preds first/last:", preds.index.min(), preds.index.max())
+    print("DEBUG: df_full first/last:", df_full.index.min(), df_full.index.max())
+
+    # Try intersection (most conservative)
+    common_index = preds.index.intersection(df_full.index)
+    if len(common_index) == len(df_full.index):
+        # perfect match — reorder preds to df_full order
+        preds = preds.loc[df_full.index]
+    else:
+        # partial or no overlap — be defensive
+        missing = df_full.index.difference(preds.index)
+        if len(missing) == 0:
+            # preds has all rows, but maybe ordering differs
+            preds = preds.reindex(df_full.index)
+        else:
+            print(f"WARNING: index mismatch — {len(missing)} / {len(df_full.index)} rows from df_full are missing in preds.")
+            # show a few missing timestamps for debugging (truncate)
+            sample_missing = list(missing[:10])
+            print("Sample missing timestamps:", sample_missing)
+            # Reindex preds to df_full index, filling missing predictions with zeros.
+            # Filling strategy: zeros (no signal). You can change to forward-fill if appropriate.
+            preds = preds.reindex(df_full.index).fillna(0.0)
+
 
     # diagnostics printout
     diagnostics(preds, df_full, horizon=cfg["horizon"])

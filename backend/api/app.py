@@ -7,6 +7,7 @@ from pathlib import Path
 import sys, os, json, joblib, math, traceback
 import lightgbm as lgb
 from dotenv import load_dotenv
+from typing import Tuple
 
 # --- helper to import routers safely ---
 def import_router(path: str, name: str):
@@ -76,6 +77,30 @@ def log_routes_on_startup():
         except Exception:
             pass
     print("=========================")
+
+# --- input normalization helper ---
+def normalize_symbol_and_timeframe(symbol: str, timeframe: str) -> Tuple[str, str]:
+    """
+    Accept common user mistakes:
+      - symbol passed as "GLD/1h" (combined symbol+tf)
+      - symbol passed as "GLD_1h" (underscore)
+    Always return (symbol, timeframe) where symbol is e.g. "GLD" or "BTC/USDT"
+    and timeframe is e.g. "1h".
+    """
+    symbol = (symbol or "").strip()
+    timeframe = (timeframe or "").strip()
+    # if symbol contains trailing timeframe token like "1h" treat accordingly
+    if not timeframe and ("/" in symbol or "_" in symbol):
+        # try slash/underscore split
+        parts = symbol.replace("_", "/").split("/")
+        if parts and parts[-1] in ("1h", "4h", "1d", "1m", "5m", "15m"):
+            timeframe = parts[-1]
+            symbol = "/".join(parts[:-1]) or symbol
+    # if symbol looks like pair with underscore file format, keep it as slash for API
+    symbol = symbol.strip()
+    if "_" in symbol and "/" not in symbol and len(symbol.split("_")) in (2, 3):
+        symbol = symbol.replace("_", "/")
+    return symbol, (timeframe or "1h")
 
 # === model loader (robust) ===
 def load_model_info():
@@ -169,6 +194,10 @@ def predict(symbol: str = "BTC/USDT", period: str = "1h", timeframe: str = "1h")
     ml_path = repo_root / "backend" / "ml"
     if str(ml_path) not in sys.path:
         sys.path.insert(0, str(ml_path))
+
+    # Normalize sloppy inputs (e.g. symbol="GLD_1h" or "BTC/USDT/1h")
+    symbol, timeframe = normalize_symbol_and_timeframe(symbol, timeframe)
+
     try:
         from feature_pipeline import prepare_feature_matrix
     except Exception as e:
@@ -177,8 +206,18 @@ def predict(symbol: str = "BTC/USDT", period: str = "1h", timeframe: str = "1h")
         X, y, y_clf, df_full = prepare_feature_matrix(symbol=symbol, timeframe=timeframe, horizon=1)
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": f"Feature preparation failed: {e}"})
+
     if X.empty:
-        return JSONResponse(status_code=500, content={"detail": "No features available for symbol/timeframe."})
+        # helpful hint so frontend user sees what to fix
+        file_hint = f"{symbol.replace('/','_')}_{timeframe}.csv"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"No features available for {symbol} / {timeframe}. "
+                          f"Ensure data file {file_hint} exists in the data directory and that the CSV has columns: timestamp,open,high,low,close,volume."
+            }
+        )
+
     last_index = X.index[-1]
     last_row = X.iloc[-1].to_dict()
     try:
