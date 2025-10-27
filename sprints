@@ -1,0 +1,45 @@
+Sprint 1 — Core infra & ingestion
+
+Set up repo, Docker, CI.
+
+Implement ingestion worker to fetch historical hourly OHLCV for BTC/ETH into TimescaleDB & S3.
+
+Sprint 2 — Feature store & baseline models
+
+Build feature pipeline (rolling indicators).
+
+Train baseline LightGBM predicting 1-hour return. Save model artifact.
+
+Sprint 3 — Backtester
+
+Implement backtester simulator with realistic fees & slippage.
+
+Run backtests on historical data and produce equity curves.
+
+Sprint 4 — Prediction API + frontend basics
+
+Implement FastAPI /predict using the latest model.
+
+Build simple Next.js dashboard (dark theme) to fetch & display predictions & backtest plot.
+
+Sprint 5 — Paper trading connector
+
+Integrate CCXT paper trading sandbox.
+
+Simulate live inference -> order placement.
+
+Sprint 6 — Model improvements & monitoring
+
+Add walk-forward CV, hyperparameter tuning, and model registry.
+
+Add prometheus/grafana and Sentry.
+
+Sprint 7 — Expand instruments & timeframes
+
+Add daily for stocks/gold, add more symbols.
+
+Add ensemble stacking.
+
+Sprint 8 — Polish & SaaS features
+
+Multi-user auth, billing, quotas, user dashboards, alerts, documentation.
