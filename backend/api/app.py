@@ -10,25 +10,40 @@ from dotenv import load_dotenv
 from typing import Tuple
 
 # --- helper to import routers safely ---
+# replace existing import_router with this improved, verbose version
 def import_router(path: str, name: str):
     try:
         module = __import__(path, fromlist=[name])
-        return getattr(module, name)
+        router = getattr(module, name)
+        print(f"[OK] imported {path}.{name}")
+        return router
     except Exception as e:
+        # print a clear warning and the full traceback so we can see why imports fail
+        import traceback
         print(f"[WARN] Failed to import {path}.{name}: {e}")
         traceback.print_exc()
         return None
 
+
+# load ML env if present
 # load ML env if present
 repo_root = Path(__file__).resolve().parents[2]
 ml_env = repo_root / "backend" / "ml" / ".env"
 if ml_env.exists():
     load_dotenv(dotenv_path=str(ml_env))
 else:
-    load_dotenv()
+    # also attempt to load backend/api/.env (your per-backend overrides)
+    api_env = repo_root / "backend" / "api" / ".env"
+    if api_env.exists():
+        load_dotenv(dotenv_path=str(api_env))
+    else:
+        load_dotenv()
 
-MODEL_DIR = Path(os.getenv("MODEL_DIR", "../models")).resolve()
+# Prefer explicit MODEL_DIR env var, otherwise default to repo_root/backend/models
+MODEL_DIR = Path(os.getenv("MODEL_DIR", str(repo_root / "backend" / "models"))).resolve()
 LATEST_JSON = MODEL_DIR / "latest.json"
+
+print("DEBUG: app.py MODEL_DIR resolved to:", MODEL_DIR)
 
 # create app
 app = FastAPI(title="Predictor API", version="0.1")
@@ -103,7 +118,15 @@ def normalize_symbol_and_timeframe(symbol: str, timeframe: str) -> Tuple[str, st
     return symbol, (timeframe or "1h")
 
 # === model loader (robust) ===
-def load_model_info():
+
+def load_model_info(symbol: str | None = None):
+    """
+    Load model info. If `symbol` is provided, prefer symbol-specific artifacts:
+    - lgb_booster_{SYMBOL}_*.txt
+    - lgb_model_{SYMBOL}_*.joblib
+    - metadata_{SYMBOL}.json
+    If none found, fall back to previous generic scanning behavior.
+    """
     info_path = LATEST_JSON
     info = {}
     if info_path.exists():
@@ -112,15 +135,7 @@ def load_model_info():
         except Exception:
             info = {}
 
-    model_file = None
     features = info.get("features") or info.get("feature_list") or None
-
-    if "model_file" in info:
-        model_file = MODEL_DIR / info["model_file"] if not Path(info["model_file"]).is_absolute() else Path(info["model_file"])
-    elif "booster_file" in info:
-        model_file = MODEL_DIR / info["booster_file"] if not Path(info["booster_file"]).is_absolute() else Path(info["booster_file"])
-    elif "model_path" in info:
-        model_file = MODEL_DIR / info["model_path"] if not Path(info["model_path"]).is_absolute() else Path(info["model_path"])
 
     def _load_by_path(p: Path, features_list):
         p = p.resolve()
@@ -139,14 +154,54 @@ def load_model_info():
             mdl = joblib.load(str(p))
             return {"type": "joblib", "model": mdl, "features": features_list or [], "version": p.name}
 
-    # try direct pointer
+    # 1) If LATEST_JSON explicitly points to a model file and it exists, use it (same as before)
+    model_file = None
+    if "model_file" in info:
+        model_file = MODEL_DIR / info["model_file"] if not Path(info["model_file"]).is_absolute() else Path(info["model_file"])
+    elif "booster_file" in info:
+        model_file = MODEL_DIR / info["booster_file"] if not Path(info["booster_file"]).is_absolute() else Path(info["booster_file"])
+    elif "model_path" in info:
+        model_file = MODEL_DIR / info["model_path"] if not Path(info["model_path"]).is_absolute() else Path(info["model_path"])
+
     if model_file is not None:
         try:
             return _load_by_path(model_file, features)
         except Exception:
             pass
 
-    # fallback to scanning
+    # 2) Try symbol-specific artifacts (if symbol provided)
+    if symbol:
+        s_key = symbol.replace("/", "_")
+        # check metadata_{symbol}.json first
+        try:
+            meta_file = MODEL_DIR / f"metadata_{s_key}.json"
+            if meta_file.exists():
+                mj = json.loads(meta_file.read_text())
+                possible = mj.get("model_path") or mj.get("model_file") or mj.get("model")
+                if possible:
+                    p = Path(possible)
+                    if not p.is_absolute():
+                        p = MODEL_DIR / p
+                    return _load_by_path(p, mj.get("features") or features)
+        except Exception:
+            pass
+
+        # check booster / joblib with symbol in name
+        try:
+            boosters_sym = sorted(MODEL_DIR.glob(f"lgb_booster_{s_key}_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if boosters_sym:
+                return _load_by_path(boosters_sym[0], features)
+        except Exception:
+            pass
+
+        try:
+            joblibs_sym = sorted(MODEL_DIR.glob(f"lgb_model_{s_key}_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if joblibs_sym:
+                return _load_by_path(joblibs_sym[0], features)
+        except Exception:
+            pass
+
+    # 3) Fallback to global scanning behavior (existing logic)
     boosters = sorted(MODEL_DIR.glob("lgb_booster_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
     if boosters:
         try:
@@ -221,7 +276,7 @@ def predict(symbol: str = "BTC/USDT", period: str = "1h", timeframe: str = "1h")
     last_index = X.index[-1]
     last_row = X.iloc[-1].to_dict()
     try:
-        info = load_model_info()
+        info = load_model_info(symbol)
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": f"Model load failed: {e}"})
     model_features = info["features"]
@@ -250,14 +305,20 @@ def predict(symbol: str = "BTC/USDT", period: str = "1h", timeframe: str = "1h")
     )
 
 # backtest latest: serve png then csv
-@app.get("/backtest/latest")
+@app.get("backtest/latest")
 def backtest_latest():
     backtests_dir = MODEL_DIR / "backtests"
     backtests_dir.mkdir(parents=True, exist_ok=True)
     pngs = sorted(backtests_dir.glob("equity_*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    print("DEBUG: backtests_dir:", backtests_dir)
+    print("DEBUG: found pngs:", pngs)
     if pngs:
+        print("DEBUG: returning:", pngs[0])
         return FileResponse(path=str(pngs[0]), media_type="image/png", filename=pngs[0].name)
     csvs = sorted(backtests_dir.glob("equity_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    print("DEBUG: found csvs:", csvs)
     if csvs:
+        print("DEBUG: returning csv:", csvs[0])
         return FileResponse(path=str(csvs[0]), media_type="text/csv", filename=csvs[0].name)
+    print("DEBUG: no backtest results in", backtests_dir)
     raise HTTPException(status_code=404, detail="No backtest results found.")
