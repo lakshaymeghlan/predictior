@@ -14,6 +14,8 @@ lightgbm
 scikit-learn
 joblib
 ta
+ccxt
+matplotlib
 
 # DB
 sqlalchemy
